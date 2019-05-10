@@ -130,14 +130,17 @@ class ProgressiveModel():
             if resolution == conv_loop - 1 and conv_loop > 1:
                 lower_res = x
 
+        # Conversion to 3-channel color
+        # This is explicitly defined so we can reuse it for the upsampled lower-resolution image as well
+        convert_to_image = kl.Conv3DTranspose(filters=3, kernel_size=4, strides=2, padding='same',
+                                              kernel_initializer=self.conv_init, use_bias=True, activation='tanh')
+        x = convert_to_image(x)
+
         # Fade output of previous resolution stage into final resolution stage
         if lower_res is not None and fade.value <= 1:
             lower_upsampled = kl.UpSampling3D()(lower_res)
+            lower_upsampled = convert_to_image(lower_upsampled)
             x = kl.Lambda(lambda x, y, alpha: blend_resolutions(x, y, alpha))([x, lower_upsampled, fade])
-
-        # Conversion to 3-channel color
-        x = kl.Conv3DTranspose(filters=3, kernel_size=4, strides=2, padding='same',
-                               kernel_initializer=self.conv_init, use_bias=True, activation='tanh')(x)
 
         return tf.keras.models.Model(inputs=[z, fade], outputs=x)
 
