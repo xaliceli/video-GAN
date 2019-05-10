@@ -1,7 +1,6 @@
 """
 ivgan.py
 iVGAN based on https://arxiv.org/pdf/1711.11453.pdf
-Single stream using WGAN-GP loss. Small outputs.
 """
 import os
 import time
