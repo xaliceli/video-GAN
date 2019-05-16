@@ -29,7 +29,7 @@ def vid_to_img(dir, frame_cap, frame_int=1):
             vidcap.set(cv2.CAP_PROP_POS_MSEC, loc)
             success, image = vidcap.read()
         if frames == frame_cap:
-            cv2.imwrite(os.path.join(dir, 'inputs', description + str(vnum) + '.jpg'), np.float32(output))
+            cv2.imwrite(os.path.join(dir, description + str(vnum) + '.jpg'), np.float32(output))
     vidcap.release()
 
 

@@ -54,7 +54,7 @@ class ProgressiveModel():
         for iter in range(self.disc_iterations):
             self.disc_optimizer.apply_gradients(zip(gradients_of_discriminator, self.discriminator.trainable_variables))
 
-    def train(self, videos, out_size, start_size, epochs, lr, save_dir, b1, b2, save_int, num_out):
+    def train(self, videos, vid_size, start_size, epochs, lr, save_dir, b1, b2, save_int, num_out):
         # Build models
         self.generator = self.generator_model(start_size)
         self.discriminator = self.discriminator_model(start_size)
@@ -75,7 +75,7 @@ class ProgressiveModel():
                                   to_file=os.path.join(save_dir, 'disc.jpg'))
 
         # Number of progressive resolution stages
-        resolutions = np.log2(out_size/start_size) + 1
+        resolutions = np.log2(vid_size/start_size) + 1
 
         for resolution in resolutions:
             print('Resolution: ', start_size*2**resolution)
