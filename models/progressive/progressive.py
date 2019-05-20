@@ -83,6 +83,8 @@ class ProgressiveModel():
                 start = time.time()
 
                 for batch in videos:
+                    if resolution < resolutions - 1:
+                        batch = kl.AveragePooling3D(2*(resolutions - resolution), padding='same')
                     self.train_step(batch, epoch/(epochs//2))
 
                 # Save every n intervals
@@ -108,32 +110,35 @@ class ProgressiveModel():
             return kl.Add()([upper, lower])
 
         # For now we start at 2x4x4 and upsample by 2x each time, e.g. 4x8x8 is next, followed by 8x16x16
-        conv_loop = np.log2(out_size/(2*start_size))
+        conv_loop = np.log2(out_size/start_size)
 
         z = kl.Input(input_shape=(self.z_dim,))
         fade = kl.Input(input_shape=(1,))
 
         # First resolution (2 x 4 x 4)
         x = kl.Dense(start_filters * start_size**2 * start_size/2,
-                     kernel_initializer=tf.keras.initializers.random_normal(stddev=0.01))(z)
+                     kernel_initializer=tf.keras.initializers.random_normal(stddev=0.01),
+                     name='dense')(z)
         x = kl.Reshape((start_size/2, start_size, start_size, start_filters))(x)
         x = kl.BatchNormalization()(x)
         x = kl.ReLU()(x)
 
         lower_res = None
-        for resolution in conv_loop:
-            filters = start_filters // 2*(resolution+1)
+        for resolution in range(conv_loop):
+            filters = max(start_filters // 2**(resolution+1), 4)
             x = kl.Conv3DTranspose(filters=filters, kernel_size=4, strides=2, padding='same',
-                                   kernel_initializer=self.conv_init, use_bias=True)(x)
+                                   kernel_initializer=self.conv_init, use_bias=True,
+                                   name='conv_'+str(2**(resolution+1)))(x)
             x = kl.BatchNormalization()(x)
             x = kl.ReLU()(x)
             if resolution == conv_loop - 1 and conv_loop > 1:
                 lower_res = x
 
         # Conversion to 3-channel color
-        # This is explicitly defined so we can reuse it for the upsampled lower-resolution image as well
-        convert_to_image = kl.Conv3DTranspose(filters=3, kernel_size=4, strides=2, padding='same',
-                                              kernel_initializer=self.conv_init, use_bias=True, activation='tanh')
+        # This is explicitly defined so we can reuse it for the upsampled lower-resolution frames as well
+        convert_to_image = kl.Conv3DTranspose(filters=3, kernel_size=1, strides=1, padding='same',
+                                              kernel_initializer=self.conv_init, use_bias=True, activation='tanh',
+                                              name='conv_to_img')
         x = convert_to_image(x)
 
         # Fade output of previous resolution stage into final resolution stage
@@ -142,35 +147,52 @@ class ProgressiveModel():
             lower_upsampled = convert_to_image(lower_upsampled)
             x = kl.Lambda(lambda x, y, alpha: blend_resolutions(x, y, alpha))([x, lower_upsampled, fade])
 
-        return tf.keras.models.Model(inputs=[z, fade], outputs=x)
+        return tf.keras.models.Model(inputs=[z, fade], outputs=x, name='generator')
 
-    def discriminator_model(self, out_size):
+    def discriminator_model(self, out_size, start_filters=512):
+
+        # Fading function
+        def blend_resolutions(upper, lower, alpha):
+            upper = tf.multiply(upper, alpha)
+            lower = tf.multiply(lower, tf.subtract(1, alpha))
+            return kl.Add()([upper, lower])
+
         conv_loop = np.log2(out_size) - 2
+        filters = max(start_filters/2**conv_loop, 4)
 
-        model = tf.keras.Sequential()
+        vid = kl.Input(input_shape=(out_size, out_size,))
+        fade = kl.Input(input_shape=(1,))
 
-        # First step requires input shape
-        model.add(kl.Conv3D(filters=out_size,
-                            input_shape=(2**(conv_loop+1), out_size, out_size, 3),
-                            kernel_size=4, strides=2, padding='same', kernel_initializer=self.conv_init))
-        model.add(kl.Lambda(lambda x: tf.contrib.layers.layer_norm(x)))
-        model.add(kl.LeakyReLU(.2))
+        # Convert from RGB frames
+        converted = kl.Conv3D(filters=filters, kernel_size=1, strides=1, padding='same',
+                      kernel_initializer=self.conv_init, use_bias=True, name='conv_from_img')(vid)
+        # First convolution downsamples by factor of 2
+        x = kl.Conv3D(filters=filters*2, kernel_size=4, strides=2, padding='same',
+                      kernel_initializer=self.conv_init, name='conv_'+str(out_size/2))(converted)
+        x = kl.Lambda(lambda x: tf.contrib.layers.layer_norm(x))(x)
+        x = kl.LeakyReLU(.2)(x)
+
+        # Calculate discriminator score using alpha-blended combination of new discriminator layer outputs
+        # versus downsampled version of input videos
+        if fade.value <= 1:
+            downsampled = kl.AveragePooling3D(pool_size=(2, 2, 2))(converted)
+            x = kl.Lambda(lambda x, y, alpha: blend_resolutions(x, y, alpha))([x, downsampled, fade])
 
         for resolution in conv_loop:
             filters = out_size * 2 * (resolution + 1)
-            model.add(kl.Conv3D(filters=filters, kernel_size=4, strides=2, padding='same',
-                                kernel_initializer=self.conv_init))
-            model.add(kl.Lambda(lambda x: tf.contrib.layers.layer_norm(x)))
-            model.add(kl.LeakyReLU(.2))
+            x = kl.Conv3D(filters=filters, kernel_size=4, strides=2, padding='same',
+                          kernel_initializer=self.conv_init, name='conv_' + str(out_size / 2))(converted)
+            x = kl.Lambda(lambda x: tf.contrib.layers.layer_norm(x))(x)
+            x = kl.LeakyReLU(.2)(x)
 
         # Convert to single value
-        model.add(kl.Conv3D(filters=1, kernel_size=4, strides=2, padding='same',
-                            kernel_initializer=self.conv_init))
-        model.add(kl.LeakyReLU(.2))
-        model.add(kl.Flatten())
-        model.add(kl.Dense(1, kernel_initializer=tf.keras.initializers.random_normal(stddev=0.01)))
+        x = kl.Conv3D(filters=1, kernel_size=4, strides=2, padding='same',
+                      kernel_initializer=self.conv_init, name='conv_1')(x)
+        x = kl.LeakyReLU(.2)(x)
+        x = kl.Flatten()(x)
+        x = kl.Dense(1, kernel_initializer=tf.keras.initializers.random_normal(stddev=0.01), name='dense')(x)
 
-        return model
+        return tf.keras.models.Model(inputs=[vid, fade], outputs=x, name='discriminator')
 
     def update_models(self, size, start_size=4):
         # Updates generator and discriminator models to add new layers corresponding to next resolution size
