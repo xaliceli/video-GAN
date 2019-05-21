@@ -33,16 +33,16 @@ def vid_to_img(dir, frame_cap, frame_int=1):
     vidcap.release()
 
 
-def parse_video(filename, target_size, frames):
+def parse_video(filename, target_size, og_size, frames):
     """
     Structure each sample as tensor of size (frames, height, width, channels)
     and normalize.
     """
     image_string = tf.read_file(filename)
     image_decoded = tf.cast(tf.image.decode_jpeg(image_string, channels=3), tf.float32)
-    og_size = (image_decoded.get_shape()[0]/frames, image_decoded.get_shape()[1])
-    frames = tf.reshape(image_decoded, [-1, og_size[0], og_size[1], 3])
-    image_resized = tf.image.resize_images(frames, target_size)
+    og_size[0] /= frames
+    frames = tf.reshape(image_decoded, [-1, int(og_size[0]), int(og_size[1]), 3])
+    image_resized = tf.image.resize_images(frames, (target_size, target_size))
     return tf.subtract(tf.math.divide(image_resized, 127.5), 1.0)
 
 
@@ -60,8 +60,10 @@ def tf_dataset(dir, frames, target_size, batch_size):
     num_use = int(len(images) / batch_size) * batch_size
     images_to_use = [str(path) for path in images[:num_use]]
 
+    og_img_size = list(cv2.imread(images_to_use[0]).shape[:2])
+
     # Construct dataset.
     dataset = tf.data.Dataset.from_tensor_slices(images_to_use).shuffle(2*len(images_to_use))
-    dataset = dataset.map(lambda x: parse_video(x, target_size, frames)).batch(batch_size)
+    dataset = dataset.map(lambda x: parse_video(x, target_size, og_img_size, frames)).batch(batch_size)
 
     return dataset

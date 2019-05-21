@@ -1,5 +1,5 @@
 """
-main.py
+train.py
 Runs chosen model given params.
 """
 
@@ -10,11 +10,13 @@ from utils.process_in import tf_dataset
 
 PARAMS = {
     'model': 'ProgressiveModel', # Model to run
-    'vid_size': (64, 64), # Size of video
-    'start_size': (4, 4),  # Starting size of video (only applies to progressive training)
-    'vid_frames': 32, # Number of frames
-    'batch_size': 32,  # Batch size
+    'vid_size': 64, # Size of video
+    'start_size': 8,  # Starting size of video (only applies to progressive training)
+    'num_frames': 32, # Number of frames
+    'batch_size': 4,  # Batch size
     'epochs': 100,  # Number of epochs
+    'z_dim': 100,  # Size of noise vector
+    'conv_init': 'he_normal',  # Initialization of convolutions
     'optimizer': 'adam',  # Optimizer
     'lr': 0.0002,  # Learning rate
     'b1': 0.5,  # Adam beta1
@@ -23,15 +25,15 @@ PARAMS = {
     'gen_iterations': 1,  # Number of generator updates
     'save_int': 50,  # Number of epochs before generating output
     'num_out': 1,  # Number of outputs generated
-    'data_dir': '/content/drive/My Drive/Colab Data/video-gan/input',  # Input data directory
-    'save_dir': '/content/drive/My Drive/Colab Data/video-gan/output'  # Output data directory
+    'data_dir': '/content/drive/My Drive/Colab Data/video-gan/inputs',  # Input data directory
+    'save_dir': '/content/drive/My Drive/Colab Data/video-gan/progressive/outputs'  # Output data directory
 }
 
 if __name__ == '__main__':
     tf.enable_eager_execution()
     dataset = tf_dataset(dir=PARAMS['data_dir'],
-                         frames=PARAMS['vid_frames'],
+                         frames=PARAMS['num_frames'],
                          target_size=PARAMS['vid_size'],
                          batch_size=PARAMS['batch_size'])
-    model = PARAMS['model'](**PARAMS)
+    model = locals()[PARAMS['model']](**PARAMS)
     model.train(videos=dataset, **PARAMS)
