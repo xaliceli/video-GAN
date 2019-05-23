@@ -21,6 +21,7 @@ class ProgressiveModel():
                  disc_iterations,
                  gen_iterations,
                  save_checkpts=True,
+                 verbose=True,
                  **kwargs):
         self.batch_size = batch_size
         self.z_dim = z_dim
@@ -29,14 +30,17 @@ class ProgressiveModel():
         self.disc_iterations = disc_iterations
         self.gen_iterations = gen_iterations
         self.save_checkpts = save_checkpts
+        self.verbose = verbose
+        self.fade = None
 
     def init_models(self, start_size, lr, b1, b2):
         # Build models
         self.generator = self.generator_model(start_size)
         self.discriminator = self.discriminator_model(start_size)
 
-        print(self.generator.summary())
-        print(self.discriminator.summary())
+        if self.verbose:
+            print(self.generator.summary())
+            print(self.discriminator.summary())
 
         self.gen_optimizer = tf.train.AdamOptimizer(learning_rate=lr, beta1=b1, beta2=b2)
         self.disc_optimizer = tf.train.AdamOptimizer(learning_rate=lr, beta1=b1, beta2=b2)
@@ -75,23 +79,29 @@ class ProgressiveModel():
         # Load from checkpoint
         latest_checkpoint = tf.train.latest_checkpoint(save_dir)
         if latest_checkpoint:
-            start_size = 4 * 2**latest_checkpoint[5]
-        self.init_models(start_size, lr, b1, b2)
+            print('Loading checkpoint ' + latest_checkpoint)
+            loop_start_size = start_size * 2**int(os.path.basename(latest_checkpoint)[4])
+        else:
+            loop_start_size = start_size
+        self.init_models(loop_start_size, lr, b1, b2)
         if latest_checkpoint:
             self.checkpoint.restore(latest_checkpoint)
 
         # Number of progressive resolution stages
-        resolutions = int(np.log2(vid_size/start_size)) + 1
+        resolutions = int(np.log2(vid_size/loop_start_size)) + 1
 
         for resolution in range(resolutions):
-            print('Resolution: ', start_size*2**resolution)
+            print('Resolution: ', loop_start_size*2**resolution)
+            self.fade = True if (resolution > 0 or loop_start_size > start_size) else False
             for epoch in range(epochs):
                 start = time.time()
 
                 for batch in videos:
                     if resolution < resolutions - 1:
-                        batch = kl.AveragePooling3D(2*(resolutions - resolution), padding='same')(batch)
-                    fade = epoch/(epochs//2) if resolution > 0 else 1
+                        batch = kl.AveragePooling3D(2**(resolutions - resolution - 1), padding='same')(batch)
+                    fade = epoch/(epochs//2)
+                    if fade == 1:
+                        self.fade = False
                     self.train_step(videos=tf.cast(batch, tf.float32),
                                     fade=tf.constant(fade, shape=(self.batch_size, 1), dtype=tf.float32))
 
@@ -103,8 +113,9 @@ class ProgressiveModel():
 
                 print('Time taken for epoch {} is {} sec'.format(epoch + 1, time.time() - start))
 
-            print('Updating models to add new layers for next resolution.')
-            self.update_models(start_size*2**resolution)
+            if resolution < resolutions - 1:
+                print('Updating models to add new layers for next resolution.')
+                self.update_models(loop_start_size*2**resolution, start_size)
 
         # Generate samples after final epoch
         self.generate(epochs, save_dir, num_out)
@@ -146,16 +157,14 @@ class ProgressiveModel():
         # This is explicitly defined so we can reuse it for the upsampled lower-resolution frames as well
         convert_to_image = kl.Conv3DTranspose(filters=3, kernel_size=1, strides=1, padding='same',
                                               kernel_initializer=self.conv_init, use_bias=True, activation='tanh',
-                                              name='conv_to_img')
+                                              name='conv_to_img_'+str(x.get_shape().as_list()[-1]))
         x = convert_to_image(x)
 
         # Fade output of previous resolution stage into final resolution stage
-        if lower_res is not None and fade.value < 1:
+        if self.fade and lower_res:
             lower_upsampled = kl.UpSampling3D()(lower_res)
             lower_upsampled = convert_to_image(lower_upsampled)
             x = kl.Lambda(lambda x, y, alpha: blend_resolutions(x, y, alpha))([x, lower_upsampled, fade])
-        else:
-            x = kl.Multiply()([x, fade])
 
         return tf.keras.models.Model(inputs=[z, fade], outputs=x, name='generator')
 
@@ -175,23 +184,23 @@ class ProgressiveModel():
 
         # Convert from RGB frames
         converted = kl.Conv3D(filters=filters, kernel_size=1, strides=1, padding='same',
-                      kernel_initializer=self.conv_init, use_bias=True, name='conv_from_img')(vid)
+                      kernel_initializer=self.conv_init, use_bias=True, name='conv_from_img_'+str(out_size))(vid)
         # First convolution downsamples by factor of 2
         x = kl.Conv3D(filters=filters, kernel_size=4, strides=2, padding='same',
                       kernel_initializer=self.conv_init, name='conv_'+str(out_size/2))(converted)
 
         # Calculate discriminator score using alpha-blended combination of new discriminator layer outputs
         # versus downsampled version of input videos
-        if out_size > start_size and fade.value < 1:
+        if self.fade:
             downsampled = kl.AveragePooling3D(pool_size=(2, 2, 2), padding='same')(converted)
             x = kl.Lambda(lambda args: blend_resolutions(args[0], args[1], args[2]))([x, downsampled, fade])
         x = kl.Lambda(lambda x: tf.contrib.layers.layer_norm(x))(x)
         x = kl.LeakyReLU(.2)(x)
 
         for resolution in range(conv_loop):
-            filters = out_size * 2 * (resolution + 1)
+            filters = out_size * 2 ** (resolution + 1)
             x = kl.Conv3D(filters=filters, kernel_size=4, strides=2, padding='same',
-                          kernel_initializer=self.conv_init, name='conv_' + str(out_size / 2))(converted)
+                          kernel_initializer=self.conv_init, name='conv_' + str(out_size / 2**(resolution+2)))(x)
             x = kl.Lambda(lambda x: tf.contrib.layers.layer_norm(x))(x)
             x = kl.LeakyReLU(.2)(x)
 
@@ -200,7 +209,8 @@ class ProgressiveModel():
                       kernel_initializer=self.conv_init, name='conv_1')(x)
         x = kl.LeakyReLU(.2)(x)
         x = kl.Flatten()(x)
-        x = kl.Dense(1, kernel_initializer=tf.keras.initializers.random_normal(stddev=0.01), name='dense')(x)
+        x = kl.Dense(1, kernel_initializer=tf.keras.initializers.random_normal(stddev=0.01),
+                     name='dense_'+str(x.get_shape().as_list()[-1]))(x)
 
         return tf.keras.models.Model(inputs=[vid, fade], outputs=x, name='discriminator')
 
@@ -209,14 +219,16 @@ class ProgressiveModel():
         # Retains weights previously learned from lower resolutions
         new_size = size*2
         new_generator, new_discriminator = self.generator_model(new_size), self.discriminator_model(new_size)
-        gen_layers, disc_layers = 4 + 3 * np.log2(size/(2*start_size)), 3 + 3 * np.log2(size) - 2
-        for layer in self.generator.layers[:gen_layers]:
-            if 'dense' in layer or 'conv' in layer:
-                new_generator.get_layer(layer).set_weights(self.generator.get_layer(layer).get_weights())
-        for layer in self.discriminator.layers[:disc_layers]:
-            if 'dense' in layer or 'conv' in layer:
-                new_discriminator.get_layer(layer).set_weights(self.discriminator.get_layer(layer).get_weights())
+        for layer in self.generator.layers:
+            if ('dense' in layer.name or 'conv' in layer.name) and layer in new_generator.layers:
+                new_generator.get_layer(layer.name).set_weights(self.generator.get_layer(layer.name).get_weights())
+        for layer in self.discriminator.layers:
+            if ('dense' in layer.name or 'conv' in layer.name) and layer in new_discriminator.layers:
+                new_discriminator.get_layer(layer.name).set_weights(self.discriminator.get_layer(layer.name).get_weights())
         self.generator, self.discriminator = new_generator, new_discriminator
+        if self.verbose:
+            print(self.generator.summary())
+            print(self.discriminator.summary())
 
     def plot_models(self, size, save_dir):
         # Plot model structure
@@ -264,5 +276,5 @@ class ProgressiveModel():
     def generate(self, epoch, save_dir, num_out):
         gen_noise = tf.random_normal([num_out, self.z_dim])
         output = self.generator([gen_noise, tf.constant(1, shape=[self.batch_size, 1])], training=False)
-        frames = [convert_image(output[:, i, :, :, :], num_out) for i in range(self.num_frames)]
+        frames = [convert_image(output[:, i, :, :, :], num_out) for i in range(output.get_shape().as_list()[1])]
         write_avi(frames, save_dir, name=str(epoch) + '.avi')
