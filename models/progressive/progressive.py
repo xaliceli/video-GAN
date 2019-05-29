@@ -168,7 +168,7 @@ class ProgressiveModel():
 
         return tf.keras.models.Model(inputs=[z, fade], outputs=x, name='generator')
 
-    def discriminator_model(self, out_size, start_size=8, start_filters=512):
+    def discriminator_model(self, out_size, start_filters=512):
 
         # Fading function
         def blend_resolutions(upper, lower, alpha):
@@ -177,16 +177,15 @@ class ProgressiveModel():
             return kl.Add()([upper, lower])
 
         conv_loop = int(np.log2(out_size)) - 3
-        filters = int(max(start_filters/(2**conv_loop), 4))
 
         vid = kl.Input(shape=(out_size/2, out_size, out_size, 3,))
         fade = kl.Input(shape=(1,))
 
         # Convert from RGB frames
-        converted = kl.Conv3D(filters=filters, kernel_size=1, strides=1, padding='same',
+        converted = kl.Conv3D(filters=start_filters, kernel_size=1, strides=1, padding='same',
                       kernel_initializer=self.conv_init, use_bias=True, name='conv_from_img_'+str(out_size))(vid)
         # First convolution downsamples by factor of 2
-        x = kl.Conv3D(filters=filters, kernel_size=4, strides=2, padding='same',
+        x = kl.Conv3D(filters=start_filters, kernel_size=4, strides=2, padding='same',
                       kernel_initializer=self.conv_init, name='conv_'+str(out_size/2))(converted)
 
         # Calculate discriminator score using alpha-blended combination of new discriminator layer outputs
@@ -198,7 +197,7 @@ class ProgressiveModel():
         x = kl.LeakyReLU(.2)(x)
 
         for resolution in range(conv_loop):
-            filters = out_size * 2 ** (resolution + 1)
+            filters = min(out_size * 2 ** (resolution + 1), start_filters)
             x = kl.Conv3D(filters=filters, kernel_size=4, strides=2, padding='same',
                           kernel_initializer=self.conv_init, name='conv_' + str(out_size / 2**(resolution+2)))(x)
             x = kl.Lambda(lambda x: tf.contrib.layers.layer_norm(x))(x)
@@ -276,5 +275,6 @@ class ProgressiveModel():
     def generate(self, epoch, save_dir, num_out):
         gen_noise = tf.random_normal([num_out, self.z_dim])
         output = self.generator([gen_noise, tf.constant(1, shape=[self.batch_size, 1])], training=False)
-        frames = [convert_image(output[:, i, :, :, :], num_out) for i in range(output.get_shape().as_list()[1])]
-        write_avi(frames, save_dir, name=str(epoch) + '.avi')
+        frames = [convert_image(output[i, ...]) for i in range(output.get_shape().as_list()[0])]
+        for out in range(num_out):
+            write_avi(frames[out], save_dir, name=str(frames[out][0].shape[-2]) + '_' + str(epoch) + '_' + str(out))
