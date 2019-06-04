@@ -9,7 +9,10 @@ import time
 import tensorflow as tf
 import tensorflow.keras.layers as kl
 
+from tensorflow.python import pywrap_tensorflow
+
 from utils.process_out import convert_image, write_avi
+
 
 class ProgressiveModel():
 
@@ -80,7 +83,7 @@ class ProgressiveModel():
         latest_checkpoint = tf.train.latest_checkpoint(save_dir)
         if latest_checkpoint:
             print('Loading checkpoint ' + latest_checkpoint)
-            loop_start_size = start_size * 2**int(os.path.basename(latest_checkpoint)[4])
+            loop_start_size = start_size * 2**(int(os.path.basename(latest_checkpoint)[4])-1)
         else:
             loop_start_size = start_size
         self.init_models(loop_start_size, lr, b1, b2)
@@ -225,6 +228,10 @@ class ProgressiveModel():
             if ('dense' in layer.name or 'conv' in layer.name) and layer in new_discriminator.layers:
                 new_discriminator.get_layer(layer.name).set_weights(self.discriminator.get_layer(layer.name).get_weights())
         self.generator, self.discriminator = new_generator, new_discriminator
+        self.checkpoint = tf.train.Checkpoint(generator_optimizer=self.gen_optimizer,
+                                              discriminator_optimizer=self.disc_optimizer,
+                                              generator=self.generator,
+                                              discriminator=self.discriminator)
         if self.verbose:
             print(self.generator.summary())
             print(self.discriminator.summary())

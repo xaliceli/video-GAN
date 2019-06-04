@@ -14,7 +14,7 @@ PARAMS = {
     'start_size': 8,  # Starting size of video (only applies to progressive training)
     'num_frames': 32, # Number of frames
     'batch_size': 4,  # Batch size
-    'epochs': 100,  # Number of epochs
+    'epochs': 1000,  # Number of epochs
     'z_dim': 100,  # Size of noise vector
     'conv_init': 'he_normal',  # Initialization of convolutions
     'optimizer': 'adam',  # Optimizer
