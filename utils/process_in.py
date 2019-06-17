@@ -22,7 +22,7 @@ def vid_to_img(dir, frame_cap, frame_int=1):
         success, image = vidcap.read()
         output = np.zeros((frame_cap * image.shape[0], image.shape[1], image.shape[2]))
         loc, frames = 0, 0
-        while success and frames < frames:
+        while success and frames < frame_cap:
             output[frames * image.shape[0]:(frames + 1) * image.shape[0]] = image
             loc += frame_int
             frames += 1

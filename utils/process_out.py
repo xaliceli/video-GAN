@@ -12,7 +12,7 @@ import tensorflow as tf
 def write_avi(frames, directory, name='', frate=24):
     writer = cv2.VideoWriter(os.path.join(directory, name + '.avi'),
                              cv2.VideoWriter_fourcc('X', 'V', 'I', 'D'),
-                             frate, frames[0].shape[-3:-1])
+                             frate, frames[0][0].shape[-3:-1])
     frames_concat = None
     for f_num, frame in enumerate(frames):
         if frames_concat is None:
