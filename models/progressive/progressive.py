@@ -104,7 +104,7 @@ class ProgressiveModel():
                         # Set floor for frames such that min value is 1/2 of frame size
                         pool_factor = 2**(resolutions - resolution - 1)
                         batch = kl.AveragePooling3D(
-                            (min(pool_factor, batch.get_shape().as_list()[1]/(start_size*2**(resolution-1))),
+                            (min(pool_factor, batch.get_shape().as_list()[1]/(loop_start_size*2**(resolution-1))),
                              pool_factor, pool_factor), padding='same')(batch)
                     fade = epoch/(epochs//2)
                     if fade == 1:
